@@ -17,8 +17,7 @@
     "format": "prettier --write src/"
   },
   "dependencies": {
-    "vue": "^3.5.13",
-    "vue-router": "^4.5.0"
+    "vue": "^3.5.13"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.1",
@@ -44,5 +43,9 @@
     "vite-plugin-vue-devtools": "^7.6.8",
     "vitest": "^2.1.8",
     "vue-tsc": "^2.1.10"
-  }
+  },
+  "engines": {
+    "node": "23.0.0"
+  },
+  "packageManager": "pnpm@9.15.4"
 }

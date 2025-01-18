@@ -1,12 +1,7 @@
 <script setup lang="ts">
-import getRandomMap from '@/utils/maps';
-import { computed, ref } from 'vue';
-
-type Cell = {
-    zone: number
-    state: 'empty' | 'cross' | 'queen'
-    invalid?: boolean
-}
+import { applyEvent, generateBoardfromEmptyMap, type Board, type Cell, type Coords, type EmptyMap, type EventStack, type EventType } from '@/utils/engine';
+import { maps } from '@/utils/maps';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
 const colors = [
   'brown',
@@ -21,42 +16,62 @@ const colors = [
   'steelblue',
   'tan'
 ]
-const grid = ref<number[][]>([])
 
-const board = ref<Cell[][]>([])
+const eventStack = ref<EventStack>([])
+const eventIndex = ref(0)
+const mapIndex = ref(0)
+const grid = computed<EmptyMap>(() => maps[mapIndex.value])
+const sideLength = computed<number>(() => maps[mapIndex.value].length)
 
-const zonesQueens = computed<Record<number, number>>(() => board.value.reduce((acc, row) => {
-  for (const cell of row) {
-    if (cell.state === 'queen') {
-      acc[cell.zone] = (acc[cell.zone]?? 0)+1
-    }
+const rows = computed<Board>(() => eventStack.value.reduce((board, event, index) => {
+  if (index > eventIndex.value - 1) {
+    return board
   }
-  return acc
-}, {} as Record<number, number>))
+  return applyEvent(event, board)
+}, generateBoardfromEmptyMap(grid.value)))
 
-const rowsQueens = computed<Array<number>>(() => board.value.map(row => row.filter(cell => cell.state === 'queen').length))
-const colsQueens = computed<Array<number>>(() => {
-  return Object.keys(board.value[0]).map((i) => {
-    return board.value.filter(row => row[Number(i)].state === 'queen').length
+const allCells = computed(() => rows.value.flat())
+
+const cols = computed<Array<Cell[]>>(() => {
+  return Array.from(Array(sideLength.value).entries()).map((_, i) => {
+    return rows.value.map(row => row[i])
   })
 })
+const zones = computed<Record<number, Cell[]>>(() => {
+  return allCells.value.reduce((acc, curr) => {
+    if (curr.zone in acc) {
+      acc[curr.zone].push(curr)
+    } else {
+      acc[curr.zone] = [curr]
+    }
+    return acc
+  }, {} as Record<number, Cell[]>)
+})
 
-function click(i: number, j: number) {
-  const cellState = board.value[i][j].state
-  if (!cellState || cellState === 'empty') {
-    board.value[i][j].state = "cross"
-  } else if (cellState === "cross") {
-    board.value[i][j].state = "queen"
-  } else {
-    board.value[i][j].state = "empty"
+type State = {
+  completed: boolean
+  invalid: boolean
+}
+function getState(cells: Cell[]): State {
+  const nbQueens = cells.filter(cell => cell.state === 'queen').length
+  if (nbQueens === 1) {
+    return { completed: true, invalid: false }
+  }
+  return {
+    completed: false,
+    invalid: cells.every(cell => cell.state === 'cross') || nbQueens > 1
   }
 }
 
+const rowsState = computed(() => rows.value.map(getState))
+const colsState = computed(() => cols.value.map(getState))
+const zonesState = computed(() => Object.fromEntries(Object.entries(zones.value).map(([i, cells]) => ([i, getState(cells)]))))
+
 function queensNeighboorhood(i: number, j: number) {
-  for (const modI of [-1,0,1]) {
-    for (const modJ of [-1,0,1]) {
+  for (const modI of [-1, 0, 1]) {
+    for (const modJ of [-1, 0, 1]) {
       if (modI === 0 && modJ === 0) continue
-      if (board.value[i+modI]?.[j+modJ]?.state === 'queen') {
+      if (rows.value[i + modI]?.[j + modJ]?.state === 'queen') {
         return true
       }
     }
@@ -64,118 +79,91 @@ function queensNeighboorhood(i: number, j: number) {
   return false
 }
 
-function fillCross(i: number, j: number, zone: number) {
-  board.value[i][j].state = 'queen'
-  for (const [ib, row] of Object.entries(board.value)) {
-    for (const [jb, cell] of Object.entries(row)) {
-      if (cell.state === 'empty') {
-        if (Number(ib) === i || Number(jb) === j || cell.zone === zone) {
-          cell.state = 'cross'
-          continue
-        }
-      }
-    }
-  }
-  const angles: Array<Cell | undefined> = [
-    board.value[i-1]?.[j-1],
-    board.value[i+1]?.[j-1],
-    board.value[i-1]?.[j+1],
-    board.value[i+1]?.[j+1],
-  ]
-  for (const cell of angles) {
-    if (cell && (!cell?.state || cell.state === 'empty')) {
-      cell.state = 'cross'
-    }
-  }
-}
-
 const won = computed<boolean>(() => {
-  let rowsCompleted = 0
-  let colsCompleted = 0
-  let noInvalid = true
-
-  for (const [i, row] of board.value.entries()) {
-    let queensInRow = 0
+  for (const [i, row] of rows.value.entries()) {
     for (const [j, cell] of row.entries()) {
-      cell.invalid = false
-      if (cell.state === 'queen') {
-        cell.invalid = queensNeighboorhood(i, j)
-        queensInRow++
+      if (cell.state === 'queen' && queensNeighboorhood(i, j)) {
+        return false
       }
-      if (cell.invalid) {
-        noInvalid = false
-      }
-    }
-    if (queensInRow === 1) {
-      rowsCompleted++
     }
   }
-  for (const j of board.value.keys()) {
-    let queensInCol = 0
-    const col = board.value.map(row => row[j])
-    for (const cell of col.values()) {
-      if (cell.state === 'queen') {
-        queensInCol++
-      }
-    }
-    if (queensInCol === 1) {
-      colsCompleted++
-    }
-  }
-
-  return rowsCompleted === colsCompleted
-  && rowsCompleted === board.value.length
-  && noInvalid
-  && Object.values(zonesQueens.value).every(num => num === 1)
+  return rowsState.value.every(state => state.completed && !state.invalid)
+    && colsState.value.every(state => state.completed && !state.invalid)
+    && Object.values(zonesState.value).every(state => state.completed && !state.invalid)
 })
 
-function newGame() {
-  grid.value = getRandomMap()
-  restart()
-}
-
 function restart() {
-  board.value = grid.value.map(row => row.map(cell => ({ zone: cell, state: 'empty' as const })))
+  eventStack.value = []
+  eventIndex.value = 0
 }
 
-newGame()
+function newEvent(coords: Coords, type: EventType) {
+  eventStack.value = eventStack.value.slice(0, eventIndex.value).concat({ coords, type })
+  eventIndex.value = eventStack.value.length
+}
+
+watch(mapIndex, restart, { immediate: true })
+
+function undo() {
+  eventIndex.value = Math.max(eventIndex.value - 1, 0)
+}
+function redo() {
+  eventIndex.value = Math.min(eventIndex.value + 1, eventStack.value.length)
+}
+
+function keyupHandler(event: KeyboardEvent) {
+  if (event.ctrlKey && event.key === 'z') {
+    undo()
+  } else if (event.ctrlKey && event.shiftKey && event.key === 'Z') {
+    redo()
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('keyup', keyupHandler)
+})
+onUnmounted(() => {
+  document.removeEventListener('keyup', keyupHandler)
+})
 </script>
 <template>
-  <button @click="newGame">Nouvelle partie</button>
-  <button @click="restart">Recommencer</button>
-  <table>
-    <tr
-      v-for="(row, i) in board"
-      :key="i"
-    >
-      <td
-        v-for="(cell, j) in row"
-        :key="j"
-        :class="`${cell.state} cell ${(zonesQueens[cell.zone] > 1 || rowsQueens[i] > 1 || colsQueens[j] > 1 || (queensNeighboorhood(i, j) && cell.state==='queen')) ? 'invalid' : ''} `"
-        :style="`background-color: ${colors[cell.zone]};`"
-        @click="click(i, j)"
-        @contextmenu.prevent="fillCross(i, j, cell.zone)"
-      >
-      </td>
-    </tr>
-  </table>
-  <div
-    v-if="won"
-    class="victory"
-  >
-    <h1>VICTOIRE !!!</h1>
+  <div>
+    <select name="mapSelect" id="mapSelect" v-model="mapIndex">
+      <option v-for="([i, map]) in maps.entries()" :key="i" :value="i">{{ i }}: L{{ map.length }}</option>
+    </select>
+    <div class="grid" :style="`grid-template-columns: repeat(${sideLength}, 3rem);`">
+      <template v-for="(row, r) in rows" :key="r">
+        <div v-for="(cell, c) in row" :key="c"
+          :class="`${cell.state} cell ${((queensNeighboorhood(r, c) && cell.state === 'queen') || zonesState[cell.zone].invalid || rowsState[r].invalid || colsState[c].invalid) ? 'invalid' : ''} `"
+          :style="`background-color: ${colors[cell.zone]};`" @click="newEvent([r, c], 'click')"
+          @contextmenu.prevent="newEvent([r, c], 'context')">
+        </div>
+      </template>
+    </div>
+    <button @click="undo" :disabled="!eventIndex">&#60;</button>
+    <button @click="restart" :disabled="!eventStack.length">Recommencer</button>
+    <button @click="redo" :disabled="eventIndex === eventStack.length">&#62;</button>
+  </div>
+  <div style="margin-left: 10rem;">
+    <div>
+      <h1>Astuce</h1>
+      <p>Clic: vide -> croix -> reine</p>
+      <p>Clic droit: reine + croix automatique</p>
+    </div>
+    <div v-if="won" class="victory">
+      <h1>VICTOIRE !!!</h1>
+    </div>
   </div>
 </template>
 
 
 <style scoped>
-table{
+table {
   border-collapse: collapse;
 }
 
-.cell{
+.cell {
   height: 3rem;
-  width: 3rem;
   border: solid 1px;
   background-color: white;
   color: black;
@@ -184,20 +172,22 @@ table{
   background-position: center;
 }
 
-.invalid{
+.invalid {
   border: solid 2px red;
 }
 
-.cross{
+.cross {
   background-image: url('/src/assets/close-large-fill.png');
 }
 
-.queen{
+.queen {
   padding: 0.5rem;
   background-image: url('/src/assets/vip-crown-2-fill.svg');
   background-clip: content-box padding-box;
   background-size: 70% 70%;
 }
 
+.grid {
+  display: grid;
+}
 </style>
-
